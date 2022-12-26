@@ -1,8 +1,23 @@
 use std::{
-    fs::{read_dir, FileType, ReadDir},
+    fs::{read_dir, FileType},
     io::Result,
-    path::{Path, PathBuf},
+    path::{Path, PathBuf}, fmt::Display, os::unix::prelude::PermissionsExt,
 };
+use colored::Colorize;
+use clap::Parser;
+
+/// Simple program to greet a person
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+   /// Do not colorize the output
+   #[arg(short, long, action)]
+   no_colors: bool,
+
+   /// Limit the depth of the file tree to traverse
+   #[arg(short, long)]
+   depth: Option<usize>,
+}
 
 #[derive(Clone, Copy)]
 struct Options {
@@ -16,7 +31,7 @@ struct OptionsBuilder {
 impl OptionsBuilder {
     pub fn new() -> Self {
         Self {
-            inner: Options { depth: None },
+            inner: Options { depth: None},
         }
     }
 
@@ -24,16 +39,34 @@ impl OptionsBuilder {
         self.inner
     }
 
-    pub fn with_depth(mut self, depth: usize) -> Self {
+    pub fn with_depth(&mut self, depth: usize)  {
         self.inner.depth = Some(depth);
-        self
     }
 }
 
 struct File {
-    name: String,
-    file_type: MyFileType,
-    path: PathBuf,
+    pub name: String,
+    pub file_type: MyFileType,
+    pub path: PathBuf,
+    pub is_executable: bool,
+}
+
+impl Display for File {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+        let colored =
+        match (&self.file_type, self.is_executable) {
+            (MyFileType::File, false) => self.name.white(),
+            (MyFileType::File, true) => self.name.green(),
+            (MyFileType::Dir, _) => self.name.blue(),
+            (MyFileType::Symlink, _) => self.name.cyan(),
+            (MyFileType::BlockDevice, _) => self.name.yellow(),
+            (MyFileType::CharDevice, _) => self.name.red(),
+            (MyFileType::Fifo, _) => self.name.magenta(),
+            (MyFileType::Socket, _) => self.name.black(),
+        };
+        write!(f, "{colored}")
+    }
 }
 
 enum MyFileType {
@@ -61,7 +94,15 @@ impl From<FileType> for MyFileType {
 }
 
 fn main() -> Result<()> {
-    let options = OptionsBuilder::new().with_depth(3).build();
+    let args = Args::parse();
+    if args.no_colors {
+        colored::control::set_override(false);
+    }
+    let mut options_builder = OptionsBuilder::new();
+    if let Some(depth) = args.depth {
+        options_builder.with_depth(depth);
+    }
+    let options = options_builder.build();
     let depth = 0;
     traverse_layer(Path::new("."), depth, "".to_string(), options)?;
     Ok(())
@@ -82,6 +123,7 @@ fn traverse_layer(path: &Path, depth: usize, prefix: String, options: Options) -
                 name: f_name,
                 file_type: f_type,
                 path: f.path(),
+                is_executable: f.metadata().ok()?.permissions().mode() & 0o111 != 0,
             })
         })
         .peekable();
@@ -94,11 +136,7 @@ fn traverse_layer(path: &Path, depth: usize, prefix: String, options: Options) -
             } else {
                 "└── "
             },
-            if let MyFileType::Symlink = f.file_type {
-                format!("{} -> {}", f.name, "Symlink lmao")
-            } else {
-                f.name
-            }
+            f
         );
         if let MyFileType::Dir = f.file_type {
             traverse_layer(
