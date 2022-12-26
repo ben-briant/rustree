@@ -1,27 +1,37 @@
+use clap::Parser;
+use colored::Colorize;
 use std::{
+    fmt::Display,
     fs::{read_dir, FileType},
     io::Result,
-    path::{Path, PathBuf}, fmt::Display, os::unix::prelude::PermissionsExt,
+    os::unix::prelude::PermissionsExt,
+    path::{Path, PathBuf},
 };
-use colored::Colorize;
-use clap::Parser;
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-   /// Do not colorize the output
-   #[arg(short, long, action)]
-   no_colors: bool,
+    /// Do not colorize the output
+    #[arg(short, long, action)]
+    no_colors: bool,
 
-   /// Limit the depth of the file tree to traverse
-   #[arg(short, long)]
-   depth: Option<usize>,
+    /// Limit the depth of the file tree to traverse
+    #[arg(short, long)]
+    depth: Option<usize>,
+
+    /// Show all files, including hidden files
+    #[arg(short, long, action)]
+    show_hidden: bool,
+
+    /// The root path
+    path: Option<String>,
 }
 
 #[derive(Clone, Copy)]
 struct Options {
     pub depth: Option<usize>,
+    pub show_hidden: bool,
 }
 
 struct OptionsBuilder {
@@ -31,7 +41,10 @@ struct OptionsBuilder {
 impl OptionsBuilder {
     pub fn new() -> Self {
         Self {
-            inner: Options { depth: None},
+            inner: Options {
+                depth: None,
+                show_hidden: false,
+            },
         }
     }
 
@@ -39,8 +52,12 @@ impl OptionsBuilder {
         self.inner
     }
 
-    pub fn with_depth(&mut self, depth: usize)  {
+    pub fn with_depth(&mut self, depth: usize) {
         self.inner.depth = Some(depth);
+    }
+
+    pub fn show_hidden(&mut self) {
+        self.inner.show_hidden = true;
     }
 }
 
@@ -53,17 +70,11 @@ struct File {
 
 impl Display for File {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-
-        let colored =
-        match (&self.file_type, self.is_executable) {
+        let colored = match (&self.file_type, self.is_executable) {
             (MyFileType::File, false) => self.name.white(),
             (MyFileType::File, true) => self.name.green(),
             (MyFileType::Dir, _) => self.name.blue(),
             (MyFileType::Symlink, _) => self.name.cyan(),
-            (MyFileType::BlockDevice, _) => self.name.yellow(),
-            (MyFileType::CharDevice, _) => self.name.red(),
-            (MyFileType::Fifo, _) => self.name.magenta(),
-            (MyFileType::Socket, _) => self.name.black(),
         };
         write!(f, "{colored}")
     }
@@ -73,10 +84,6 @@ enum MyFileType {
     File,
     Dir,
     Symlink,
-    BlockDevice,
-    CharDevice,
-    Fifo,
-    Socket,
 }
 
 impl From<FileType> for MyFileType {
@@ -102,9 +109,13 @@ fn main() -> Result<()> {
     if let Some(depth) = args.depth {
         options_builder.with_depth(depth);
     }
+    if args.show_hidden {
+        options_builder.show_hidden();
+    }
     let options = options_builder.build();
     let depth = 0;
-    traverse_layer(Path::new("."), depth, "".to_string(), options)?;
+    let path = args.path.unwrap_or_else(|| ".".to_string());
+    traverse_layer(Path::new(&path), depth, "".to_string(), options)?;
     Ok(())
 }
 
@@ -126,18 +137,16 @@ fn traverse_layer(path: &Path, depth: usize, prefix: String, options: Options) -
                 is_executable: f.metadata().ok()?.permissions().mode() & 0o111 != 0,
             })
         })
+        .filter(|f| {
+            if options.show_hidden {
+                true
+            } else {
+                !f.name.starts_with('.')
+            }
+        })
         .peekable();
     while let Some(f) = file_it.next() {
-        println!(
-            "{}{}{}",
-            prefix,
-            if file_it.peek().is_some() {
-                "├── "
-            } else {
-                "└── "
-            },
-            f
-        );
+        print_current_item(&f, &prefix, file_it.peek().is_none());
         if let MyFileType::Dir = f.file_type {
             traverse_layer(
                 &f.path,
@@ -155,4 +164,8 @@ fn traverse_layer(path: &Path, depth: usize, prefix: String, options: Options) -
     }
 
     Ok(())
+}
+
+fn print_current_item(f: &File, prefix: &str, is_last: bool) {
+    println!("{}{}{}", prefix, if !is_last { "├── " } else { "└── " }, f);
 }
